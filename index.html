@@ -45,9 +45,11 @@
     #buyBtn { background: #145214; }
     #sellBtn { background: #6d1e1e; }
     #autoBtn { background: #1a3e6d; }
+    #exportBtn { background: #5a3e6d; }
     #buyBtn:hover { background: #1a6e1a; }
     #sellBtn:hover { background: #8a2525; }
     #autoBtn:hover { background: #2a4e8d; }
+    #exportBtn:hover { background: #6a4e8d; }
     #difference, #tradingResults, #alerts, #signalLog {
       margin-top: 10px;
       font-size: 14px;
@@ -118,6 +120,7 @@
     <button id="buyBtn" disabled>Buy</button>
     <button id="sellBtn" disabled>Sell</button>
     <button id="autoBtn">Enable Auto Trading</button>
+    <button id="exportBtn">Export Data Backup</button>
   </div>
   <div id="currentSignal"></div>
   <div id="chart"></div>
@@ -157,6 +160,7 @@
     let autoTradeTimeout = null;
     let lastPriceUpdate = null;
     let currentPrice = null;
+    const STORAGE_KEY = 'btcSwingTradeData';
 
     // Initialize charts
     function initCharts() {
@@ -181,24 +185,123 @@
       balanceSeries = balanceChart.addLineSeries({ color: '#FFD700' });
     }
 
+    // Save all trading data to localStorage
+    function saveTradingData() {
+      const tradingData = {
+        tradeLog,
+        balanceData,
+        signalLog,
+        currentPosition,
+        currentBalance,
+        btcAmount,
+        initialBalance,
+        autoTradingEnabled,
+        timeframe: document.getElementById('timeframe').value,
+        demoAmount: document.getElementById('demoAmount').value,
+        lastUpdated: new Date().toISOString()
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(tradingData));
+    }
+
+    // Load trading data from localStorage
+    function loadTradingData() {
+      const savedData = localStorage.getItem(STORAGE_KEY);
+      if (savedData) {
+        try {
+          const tradingData = JSON.parse(savedData);
+          
+          // Restore basic trading state
+          tradeLog = tradingData.tradeLog || [];
+          balanceData = tradingData.balanceData || [];
+          signalLog = tradingData.signalLog || [];
+          currentPosition = tradingData.currentPosition || null;
+          currentBalance = parseFloat(tradingData.currentBalance) || 10;
+          btcAmount = parseFloat(tradingData.btcAmount) || 0;
+          initialBalance = parseFloat(tradingData.initialBalance) || 10;
+          autoTradingEnabled = tradingData.autoTradingEnabled || false;
+          
+          // Restore UI elements
+          document.getElementById('timeframe').value = tradingData.timeframe || '1d';
+          document.getElementById('demoAmount').value = tradingData.demoAmount || '10';
+          
+          // Update UI based on loaded data
+          updateResults();
+          updateSignalLogDisplay();
+          
+          // Restore balance chart
+          if (balanceSeries && balanceData.length > 0) {
+            balanceSeries.setData(balanceData);
+          }
+          
+          // Update mode indicator
+          document.getElementById('autoBtn').textContent = autoTradingEnabled ? 'Disable Auto Trading' : 'Enable Auto Trading';
+          document.getElementById('modeIndicator').textContent = autoTradingEnabled ? 'Auto Trading Mode' : 'Manual Mode';
+          document.getElementById('modeIndicator').className = autoTradingEnabled ? 'mode-indicator auto-mode' : 'mode-indicator';
+          
+          console.log('Trading data loaded successfully');
+        } catch (e) {
+          console.error('Error loading trading data:', e);
+        }
+      }
+    }
+
     // Add entry to signal log
     function addSignalToLog(type, price, time) {
       const logEntry = {
         type: type,
         price: price,
-        time: new Date(time * 1000),
-        localTime: new Date().toLocaleString()
+        time: time,
+        localTime: new Date().toLocaleString(),
+        chartTime: new Date(time * 1000).toLocaleString()
       };
-      signalLog.unshift(logEntry); // Add to beginning of array
-      
-      // Update log display (keep only last 50 entries)
+      signalLog.unshift(logEntry);
+      updateSignalLogDisplay();
+      saveTradingData();
+    }
+
+    // Update signal log display
+    function updateSignalLogDisplay() {
       const logEntries = signalLog.slice(0, 50);
       document.getElementById('signalLogEntries').innerHTML = logEntries.map(entry => `
         <div class="signal-log-entry ${entry.type.toLowerCase()}-log">
           [${entry.localTime}] ${entry.type} signal @ ${entry.price.toFixed(2)} 
-          (Chart time: ${entry.time.toLocaleString()})
+          (Chart time: ${entry.chartTime})
         </div>
       `).join('');
+    }
+
+    // Export all trading data to JSON file
+    function exportAllData() {
+      const exportData = {
+        metadata: {
+          app: "BTC Swing Trade Analyzer",
+          version: "1.0",
+          exportDate: new Date().toISOString(),
+          timeframe: document.getElementById('timeframe').value,
+          initialBalance: initialBalance,
+          currentBalance: currentBalance,
+          btcAmount: btcAmount,
+          autoTrading: autoTradingEnabled
+        },
+        trades: tradeLog,
+        signals: signalLog,
+        balanceHistory: balanceData
+      };
+
+      const dataStr = JSON.stringify(exportData, null, 2);
+      const blob = new Blob([dataStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `btc_trading_data_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+      document.body.appendChild(a);
+      a.click();
+      
+      setTimeout(() => {
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, 100);
     }
 
     // Play alert sound and show visual notification
@@ -299,17 +402,23 @@
           usdt: 0,
           value: currentBalance,
           time: timestamp,
-          mode: autoTradingEnabled ? 'AUTO' : 'MANUAL'
+          mode: autoTradingEnabled ? 'AUTO' : 'MANUAL',
+          localTime: new Date().toLocaleString()
         });
         currentBalance = 0;
         currentPosition = { entryPrice: price, entryTime: timestamp };
         playAlert('BUY', price);
         
         // Update balance chart
-        balanceData.push({ time: timestamp, value: btcAmount * price });
+        balanceData.push({ 
+          time: timestamp, 
+          value: btcAmount * price,
+          localTime: new Date().toLocaleString()
+        });
         balanceSeries.setData(balanceData);
         updateResults();
         clearSignal();
+        saveTradingData();
       }
     }
 
@@ -330,17 +439,23 @@
         value: currentBalance,
         time: timestamp,
         profit: profit,
-        mode: autoTradingEnabled ? 'AUTO' : 'MANUAL'
+        mode: autoTradingEnabled ? 'AUTO' : 'MANUAL',
+        localTime: new Date().toLocaleString()
       });
       btcAmount = 0;
       currentPosition = null;
       playAlert('SELL', price);
       
       // Update balance chart
-      balanceData.push({ time: timestamp, value: currentBalance });
+      balanceData.push({ 
+        time: timestamp, 
+        value: currentBalance,
+        localTime: new Date().toLocaleString()
+      });
       balanceSeries.setData(balanceData);
       updateResults();
       clearSignal();
+      saveTradingData();
     }
 
     // Update trading results display
@@ -359,12 +474,11 @@
         html += `<ul>`;
         tradeLog.slice().reverse().forEach((trade, i) => {
           if (i > 5) return;
-          const time = new Date(trade.time * 1000).toLocaleString();
           const tradeProfitClass = trade.profit >= 0 ? 'profit' : 'loss';
           const profitText = trade.profit !== undefined ? 
             `<span class="${tradeProfitClass}">${trade.profit >= 0 ? '+' : ''}${trade.profit.toFixed(2)} (${((trade.profit/initialBalance)*100).toFixed(2)}%)</span>` : '';
           
-          html += `<li>${time} - ${trade.action} @ ${trade.price.toFixed(2)} ${profitText} [${trade.mode}]</li>`;
+          html += `<li>${trade.localTime} - ${trade.action} @ ${trade.price.toFixed(2)} ${profitText} [${trade.mode}]</li>`;
         });
         html += `</ul>`;
       } else {
@@ -386,12 +500,13 @@
       document.getElementById('sellBtn').disabled = autoTradingEnabled || currentSignal !== 'SELL';
       
       updateResults();
+      saveTradingData();
     }
 
     // Update current price
     function updateCurrentPrice(price) {
       currentPrice = price;
-      if (Date.now() - (lastPriceUpdate || 0) > 2000) { // Update every 2 seconds
+      if (Date.now() - (lastPriceUpdate || 0) > 2000) {
         updateResults();
         lastPriceUpdate = Date.now();
       }
@@ -457,20 +572,12 @@
       if (ws) ws.close();
       if (priceWs) priceWs.close();
       
-      // Reset state
+      // Reset state (but keep existing trading data)
       initCharts();
-      tradeLog = [];
-      balanceData = [];
-      signalLog = [];
-      currentPosition = null;
-      initialBalance = parseFloat(document.getElementById('demoAmount').value) || 10;
-      currentBalance = initialBalance;
-      btcAmount = 0;
       candleData = [];
       greenHeights = [];
       markers = [];
       clearSignal();
-      document.getElementById('signalLogEntries').innerHTML = '';
       
       // Binance WebSocket connections
       const intervalMap = {
@@ -525,6 +632,7 @@
           document.getElementById('startMonitoring').textContent = 'Stop Monitoring';
           document.getElementById('difference').innerText = `Monitoring BTC/USDT ${timeframe} swing trade signals`;
           updateResults();
+          saveTradingData();
         })
         .catch(err => {
           console.error('API error:', err);
@@ -546,12 +654,13 @@
       document.getElementById('startMonitoring').textContent = 'Start Monitoring';
       document.getElementById('difference').innerText = 'Monitoring stopped';
       clearSignal();
+      saveTradingData();
     }
 
     // Initialize
     document.addEventListener('DOMContentLoaded', () => {
       initCharts();
-      updateResults();
+      loadTradingData(); // Load saved data first
       
       document.getElementById('startMonitoring').addEventListener('click', () => {
         if (isMonitoring) {
@@ -565,6 +674,13 @@
       document.getElementById('buyBtn').addEventListener('click', executeBuy);
       document.getElementById('sellBtn').addEventListener('click', executeSell);
       document.getElementById('autoBtn').addEventListener('click', toggleAutoTrading);
+      document.getElementById('exportBtn').addEventListener('click', exportAllData);
+      
+      // Save data periodically (every 30 seconds) as backup
+      setInterval(saveTradingData, 30000);
+      
+      // Save data when page is about to unload
+      window.addEventListener('beforeunload', saveTradingData);
     });
   </script>
 </body>
