@@ -46,10 +46,12 @@
     #sellBtn { background: #6d1e1e; }
     #autoBtn { background: #1a3e6d; }
     #exportBtn { background: #5a3e6d; }
+    #importBtn { background: #3e6d5a; }
     #buyBtn:hover { background: #1a6e1a; }
     #sellBtn:hover { background: #8a2525; }
     #autoBtn:hover { background: #2a4e8d; }
     #exportBtn:hover { background: #6a4e8d; }
+    #importBtn:hover { background: #4e8d6a; }
     #difference, #tradingResults, #alerts, #signalLog {
       margin-top: 10px;
       font-size: 14px;
@@ -120,7 +122,8 @@
     <button id="buyBtn" disabled>Buy</button>
     <button id="sellBtn" disabled>Sell</button>
     <button id="autoBtn">Enable Auto Trading</button>
-    <button id="exportBtn">Export Data Backup</button>
+    <button id="exportBtn">Export Data</button>
+    <button id="importBtn">Import Data</button>
   </div>
   <div id="currentSignal"></div>
   <div id="chart"></div>
@@ -132,6 +135,7 @@
     <h3>Signal Log</h3>
     <div id="signalLogEntries"></div>
   </div>
+  <input type="file" id="fileInput" style="display: none;" accept=".json" />
 
   <audio id="signalSound" src="https://assets.mixkit.co/sfx/preview/mixkit-software-interface-start-2574.mp3" preload="auto"></audio>
   <audio id="buySound" src="https://assets.mixkit.co/sfx/preview/mixkit-positive-interface-beep-221.mp3" preload="auto"></audio>
@@ -160,7 +164,7 @@
     let autoTradeTimeout = null;
     let lastPriceUpdate = null;
     let currentPrice = null;
-    const STORAGE_KEY = 'btcSwingTradeData';
+    const STORAGE_KEY = 'btcSwingTradeData_v2';
 
     // Initialize charts
     function initCharts() {
@@ -188,6 +192,7 @@
     // Save all trading data to localStorage
     function saveTradingData() {
       const tradingData = {
+        version: 2,
         tradeLog,
         balanceData,
         signalLog,
@@ -201,6 +206,7 @@
         lastUpdated: new Date().toISOString()
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(tradingData));
+      console.log('Trading data saved');
     }
 
     // Load trading data from localStorage
@@ -210,7 +216,13 @@
         try {
           const tradingData = JSON.parse(savedData);
           
-          // Restore basic trading state
+          // Basic validation
+          if (!tradingData.version || tradingData.version < 2) {
+            console.log('Old data format found, performing migration...');
+            return migrateOldData(savedData);
+          }
+          
+          // Restore trading state
           tradeLog = tradingData.tradeLog || [];
           balanceData = tradingData.balanceData || [];
           signalLog = tradingData.signalLog || [];
@@ -239,9 +251,53 @@
           document.getElementById('modeIndicator').className = autoTradingEnabled ? 'mode-indicator auto-mode' : 'mode-indicator';
           
           console.log('Trading data loaded successfully');
+          showAlert('Trading data loaded from previous session', '#333');
         } catch (e) {
           console.error('Error loading trading data:', e);
+          showAlert('Error loading saved data', '#6d1e1e');
         }
+      }
+    }
+
+    // Migrate data from old format
+    function migrateOldData(oldData) {
+      try {
+        const data = JSON.parse(oldData);
+        // Create new data structure from old format
+        const newData = {
+          version: 2,
+          tradeLog: data.trades || [],
+          balanceData: data.balanceHistory || [],
+          signalLog: data.signals || [],
+          currentPosition: null, // Will be reconstructed
+          currentBalance: data.metadata?.currentBalance || 10,
+          btcAmount: data.metadata?.btcAmount || 0,
+          initialBalance: data.metadata?.initialBalance || 10,
+          autoTradingEnabled: data.metadata?.autoTrading || false,
+          timeframe: data.metadata?.timeframe || '1d',
+          demoAmount: '10',
+          lastUpdated: new Date().toISOString()
+        };
+        
+        // Reconstruct current position
+        if (newData.btcAmount > 0 && newData.tradeLog.length > 0) {
+          const lastBuy = newData.tradeLog.reverse().find(t => t.action === 'BUY');
+          if (lastBuy) {
+            newData.currentPosition = {
+              entryPrice: lastBuy.price,
+              entryTime: lastBuy.time
+            };
+          }
+        }
+        
+        // Save migrated data
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(newData));
+        console.log('Data migration completed');
+        loadTradingData(); // Load the migrated data
+      } catch (e) {
+        console.error('Migration failed:', e);
+        localStorage.removeItem(STORAGE_KEY);
+        showAlert('Data migration failed - starting fresh', '#6d1e1e');
       }
     }
 
@@ -261,7 +317,7 @@
 
     // Update signal log display
     function updateSignalLogDisplay() {
-      const logEntries = signalLog.slice(0, 50);
+      const logEntries = signalLog.slice(0, 100); // Show last 100 entries
       document.getElementById('signalLogEntries').innerHTML = logEntries.map(entry => `
         <div class="signal-log-entry ${entry.type.toLowerCase()}-log">
           [${entry.localTime}] ${entry.type} signal @ ${entry.price.toFixed(2)} 
@@ -270,12 +326,21 @@
       `).join('');
     }
 
+    // Show alert message
+    function showAlert(message, color) {
+      const alertBox = document.getElementById('alerts');
+      alertBox.innerText = message;
+      alertBox.style.backgroundColor = color;
+      alertBox.style.display = 'block';
+      setTimeout(() => { alertBox.style.display = 'none'; }, 3000);
+    }
+
     // Export all trading data to JSON file
     function exportAllData() {
       const exportData = {
         metadata: {
           app: "BTC Swing Trade Analyzer",
-          version: "1.0",
+          version: "2.0",
           exportDate: new Date().toISOString(),
           timeframe: document.getElementById('timeframe').value,
           initialBalance: initialBalance,
@@ -302,6 +367,89 @@
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
       }, 100);
+      
+      showAlert('Data exported successfully', '#145214');
+    }
+
+    // Import trading data from file
+    function importData() {
+      const fileInput = document.getElementById('fileInput');
+      fileInput.click();
+      
+      fileInput.onchange = e => {
+        const file = e.target.files[0];
+        if (!file) return;
+        
+        const reader = new FileReader();
+        reader.onload = event => {
+          try {
+            const importedData = JSON.parse(event.target.result);
+            
+            // Validate imported data
+            if (!importedData.trades || !importedData.signals || !importedData.balanceHistory) {
+              throw new Error('Invalid data format');
+            }
+            
+            // Confirm with user before overwriting
+            if (confirm('This will overwrite your current trading data. Continue?')) {
+              // Clear existing data
+              tradeLog = [];
+              balanceData = [];
+              signalLog = [];
+              currentPosition = null;
+              
+              // Import trades
+              tradeLog = importedData.trades.map(trade => ({
+                ...trade,
+                localTime: trade.localTime || new Date(trade.time * 1000).toLocaleString()
+              }));
+              
+              // Import signals
+              signalLog = importedData.signals.map(signal => ({
+                ...signal,
+                localTime: signal.localTime || new Date(signal.time * 1000).toLocaleString(),
+                chartTime: signal.chartTime || new Date(signal.time * 1000).toLocaleString()
+              }));
+              
+              // Import balance history
+              balanceData = importedData.balanceHistory.map(balance => ({
+                ...balance,
+                localTime: balance.localTime || new Date(balance.time * 1000).toLocaleString()
+              }));
+              
+              // Update current balances
+              if (tradeLog.length > 0) {
+                const lastTrade = tradeLog[tradeLog.length - 1];
+                if (lastTrade.action === 'BUY') {
+                  currentBalance = 0;
+                  btcAmount = lastTrade.amount;
+                  currentPosition = {
+                    entryPrice: lastTrade.price,
+                    entryTime: lastTrade.time
+                  };
+                } else {
+                  currentBalance = lastTrade.usdt;
+                  btcAmount = 0;
+                  currentPosition = null;
+                }
+              }
+              
+              // Update UI
+              updateResults();
+              updateSignalLogDisplay();
+              balanceSeries.setData(balanceData);
+              
+              // Save imported data
+              saveTradingData();
+              showAlert('Data imported successfully', '#145214');
+            }
+          } catch (e) {
+            console.error('Error importing data:', e);
+            showAlert('Error importing data - invalid format', '#6d1e1e');
+          }
+        };
+        reader.readAsText(file);
+      };
     }
 
     // Play alert sound and show visual notification
@@ -395,7 +543,7 @@
       
       if (currentBalance > 0) {
         btcAmount = currentBalance / price;
-        tradeLog.push({
+        const trade = {
           action: 'BUY',
           price: price,
           amount: btcAmount,
@@ -404,17 +552,19 @@
           time: timestamp,
           mode: autoTradingEnabled ? 'AUTO' : 'MANUAL',
           localTime: new Date().toLocaleString()
-        });
+        };
+        tradeLog.push(trade);
         currentBalance = 0;
         currentPosition = { entryPrice: price, entryTime: timestamp };
         playAlert('BUY', price);
         
         // Update balance chart
-        balanceData.push({ 
+        const balancePoint = { 
           time: timestamp, 
           value: btcAmount * price,
           localTime: new Date().toLocaleString()
-        });
+        };
+        balanceData.push(balancePoint);
         balanceSeries.setData(balanceData);
         updateResults();
         clearSignal();
@@ -431,7 +581,7 @@
       
       currentBalance = btcAmount * price;
       const profit = currentBalance - initialBalance;
-      tradeLog.push({
+      const trade = {
         action: 'SELL',
         price: price,
         amount: 0,
@@ -441,17 +591,19 @@
         profit: profit,
         mode: autoTradingEnabled ? 'AUTO' : 'MANUAL',
         localTime: new Date().toLocaleString()
-      });
+      };
+      tradeLog.push(trade);
       btcAmount = 0;
       currentPosition = null;
       playAlert('SELL', price);
       
       // Update balance chart
-      balanceData.push({ 
+      const balancePoint = { 
         time: timestamp, 
         value: currentBalance,
         localTime: new Date().toLocaleString()
-      });
+      };
+      balanceData.push(balancePoint);
       balanceSeries.setData(balanceData);
       updateResults();
       clearSignal();
@@ -675,6 +827,7 @@
       document.getElementById('sellBtn').addEventListener('click', executeSell);
       document.getElementById('autoBtn').addEventListener('click', toggleAutoTrading);
       document.getElementById('exportBtn').addEventListener('click', exportAllData);
+      document.getElementById('importBtn').addEventListener('click', importData);
       
       // Save data periodically (every 30 seconds) as backup
       setInterval(saveTradingData, 30000);
