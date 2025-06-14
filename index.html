@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>BTC Swing Trade Analyzer</title>
+  <script src="https://unpkg.com/lightweight-charts@4.0.0/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    body {
+      margin: 0;
+      background: #121212;
+      color: white;
+      font-family: sans-serif;
+      text-align: center;
+    }
+    #chart {
+      height: 400px;
+      width: 100%;
+    }
+    #controls {
+      margin: 10px;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 10px;
+    }
+    select, button, input {
+      padding: 8px;
+      background: #333;
+      color: white;
+      border: 1px solid #555;
+      border-radius: 4px;
+      flex-grow: 1;
+      min-width: 150px;
+    }
+    button {
+      cursor: pointer;
+    }
+    button:hover {
+      background: #444;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    #buyBtn { background: #145214; }
+    #sellBtn { background: #6d1e1e; }
+    #autoBtn { background: #1a3e6d; }
+    #buyBtn:hover { background: #1a6e1a; }
+    #sellBtn:hover { background: #8a2525; }
+    #autoBtn:hover { background: #2a4e8d; }
+    #difference, #tradingResults, #alerts, #signalLog {
+      margin-top: 10px;
+      font-size: 14px;
+      padding: 10px;
+    }
+    #alerts {
+      display: none;
+      border-radius: 5px;
+    }
+    #balanceChart, #signalLog {
+      height: 200px;
+      width: 100%;
+      overflow-y: auto;
+      text-align: left;
+    }
+    .signal-log-entry {
+      padding: 5px;
+      border-bottom: 1px solid #333;
+    }
+    .buy-log { color: #4CAF50; }
+    .sell-log { color: #F44336; }
+    ul {
+      text-align: left;
+      margin: auto;
+      max-width: 90%;
+    }
+    .profit { color: #4CAF50; }
+    .loss { color: #F44336; }
+    .signal {
+      padding: 5px 10px;
+      border-radius: 4px;
+      margin: 5px;
+      display: inline-block;
+    }
+    .buy-signal { background: rgba(0, 100, 0, 0.3); border-left: 4px solid #0a0; }
+    .sell-signal { background: rgba(100, 0, 0, 0.3); border-left: 4px solid #a00; }
+    .mode-indicator {
+      padding: 5px 10px;
+      border-radius: 4px;
+      margin: 5px;
+      display: inline-block;
+      background: #333;
+    }
+    .auto-mode { background: #1a3e6d; }
+    .countdown {
+      font-weight: bold;
+      color: #FFD700;
+    }
+    @media (max-width: 600px) {
+      #chart, #balanceChart {
+        height: 300px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <h2>BTC Swing Trade Analyzer</h2>
+  <div id="modeIndicator" class="mode-indicator">Manual Mode</div>
+  <div id="controls">
+    <select id="timeframe">
+      <option value="4h">4 Hours</option>
+      <option value="1d" selected>1 Day</option>
+      <option value="3d">3 Days</option>
+      <option value="1w">1 Week</option>
+    </select>
+    <input type="number" id="demoAmount" placeholder="Demo Amount (USDT)" value="10" min="1" step="1" />
+    <button id="startMonitoring">Start Monitoring</button>
+    <button id="buyBtn" disabled>Buy</button>
+    <button id="sellBtn" disabled>Sell</button>
+    <button id="autoBtn">Enable Auto Trading</button>
+  </div>
+  <div id="currentSignal"></div>
+  <div id="chart"></div>
+  <div id="difference"></div>
+  <div id="alerts"></div>
+  <div id="tradingResults"></div>
+  <div id="balanceChart"></div>
+  <div id="signalLog">
+    <h3>Signal Log</h3>
+    <div id="signalLogEntries"></div>
+  </div>
+
+  <audio id="signalSound" src="https://assets.mixkit.co/sfx/preview/mixkit-software-interface-start-2574.mp3" preload="auto"></audio>
+  <audio id="buySound" src="https://assets.mixkit.co/sfx/preview/mixkit-positive-interface-beep-221.mp3" preload="auto"></audio>
+  <audio id="sellSound" src="https://assets.mixkit.co/sfx/preview/mixkit-interface-hint-notification-911.mp3" preload="auto"></audio>
+
+  <script>
+    // Trading system variables
+    let chart, candleSeries, diffSeries;
+    let balanceChart, balanceSeries;
+    let tradeLog = [], balanceData = [], signalLog = [];
+    let currentPosition = null;
+    let initialBalance = 10;
+    let currentBalance = 10;
+    let btcAmount = 0;
+    let ws = null, priceWs = null;
+    let isMonitoring = false;
+    let currentSignal = null;
+    let signalPrice = null;
+    let candleData = [];
+    let greenHeights = [];
+    let muted = false;
+    let lastProcessedCandleTime = null;
+    let markers = [];
+    let lastCandle = null;
+    let autoTradingEnabled = false;
+    let autoTradeTimeout = null;
+    let lastPriceUpdate = null;
+    let currentPrice = null;
+
+    // Initialize charts
+    function initCharts() {
+      if (chart) chart.remove();
+      if (balanceChart) balanceChart.remove();
+
+      // Main price chart
+      chart = LightweightCharts.createChart(document.getElementById('chart'), {
+        layout: { background: { color: '#121212' }, textColor: '#fff' },
+        grid: { vertLines: { color: '#333' }, horzLines: { color: '#333' } },
+        timeScale: { timeVisible: true, secondsVisible: true },
+      });
+      candleSeries = chart.addCandlestickSeries();
+      diffSeries = chart.addLineSeries({ color: 'rgba(255, 0, 0, 0.7)', lineWidth: 2 });
+
+      // Balance chart
+      balanceChart = LightweightCharts.createChart(document.getElementById('balanceChart'), {
+        layout: { background: { color: '#121212' }, textColor: '#fff' },
+        grid: { vertLines: { color: '#222' }, horzLines: { color: '#222' } },
+        timeScale: { timeVisible: true },
+      });
+      balanceSeries = balanceChart.addLineSeries({ color: '#FFD700' });
+    }
+
+    // Add entry to signal log
+    function addSignalToLog(type, price, time) {
+      const logEntry = {
+        type: type,
+        price: price,
+        time: new Date(time * 1000),
+        localTime: new Date().toLocaleString()
+      };
+      signalLog.unshift(logEntry); // Add to beginning of array
+      
+      // Update log display (keep only last 50 entries)
+      const logEntries = signalLog.slice(0, 50);
+      document.getElementById('signalLogEntries').innerHTML = logEntries.map(entry => `
+        <div class="signal-log-entry ${entry.type.toLowerCase()}-log">
+          [${entry.localTime}] ${entry.type} signal @ ${entry.price.toFixed(2)} 
+          (Chart time: ${entry.time.toLocaleString()})
+        </div>
+      `).join('');
+    }
+
+    // Play alert sound and show visual notification
+    function playAlert(type, price, isSignal = false) {
+      const alertBox = document.getElementById('alerts');
+      if (!muted) {
+        const sound = isSignal ? signalSound : (type === 'BUY' ? buySound : sellSound);
+        sound.currentTime = 0;
+        sound.play().catch(e => console.log('Audio play failed:', e));
+      }
+      alertBox.innerText = `${isSignal ? 'SIGNAL' : 'TRADE'}: ${type} @ ${price.toFixed(2)} ${autoTradingEnabled ? '(AUTO)' : ''}`;
+      alertBox.style.backgroundColor = type === 'BUY' ? '#145214' : '#6d1e1e';
+      alertBox.style.display = 'block';
+      setTimeout(() => { alertBox.style.display = 'none'; }, 3000);
+    }
+
+    // Display current signal with countdown
+    function displaySignal(type, price, candleTime) {
+      currentSignal = type;
+      signalPrice = price;
+      addSignalToLog(type, price, candleTime);
+      
+      let secondsLeft = 3;
+      const signalDiv = document.getElementById('currentSignal');
+      
+      const updateCountdown = () => {
+        signalDiv.innerHTML = `
+          <div class="signal ${type.toLowerCase()}-signal">
+            <strong>${type} SIGNAL</strong> 
+            <span>Price: ${price.toFixed(2)}</span>
+            <span>Time: ${new Date(candleTime * 1000).toLocaleTimeString()}</span>
+            ${autoTradingEnabled ? `<span class="countdown">Executing in ${secondsLeft}s</span>` : ''}
+          </div>
+        `;
+        
+        if (secondsLeft > 0) {
+          secondsLeft--;
+          setTimeout(updateCountdown, 1000);
+        } else if (autoTradingEnabled) {
+          if (type === 'BUY') executeBuy();
+          else if (type === 'SELL') executeSell();
+        }
+      };
+      
+      updateCountdown();
+      
+      // Enable appropriate button if in manual mode
+      if (!autoTradingEnabled) {
+        document.getElementById('buyBtn').disabled = type !== 'BUY';
+        document.getElementById('sellBtn').disabled = type !== 'SELL';
+      }
+      
+      playAlert(type, price, true);
+
+      // Add marker to chart
+      markers.push({
+        time: candleTime,
+        position: type === 'BUY' ? 'belowBar' : 'aboveBar',
+        color: type === 'BUY' ? 'green' : 'red',
+        shape: type === 'BUY' ? 'arrowUp' : 'arrowDown',
+        text: type
+      });
+      candleSeries.setMarkers(markers);
+
+      // Schedule auto trade execution after 3 seconds
+      if (autoTradingEnabled) {
+        if (autoTradeTimeout) clearTimeout(autoTradeTimeout);
+        autoTradeTimeout = setTimeout(() => {
+          if (type === 'BUY') executeBuy();
+          else if (type === 'SELL') executeSell();
+        }, 3000);
+      }
+    }
+
+    // Clear current signal
+    function clearSignal() {
+      currentSignal = null;
+      signalPrice = null;
+      document.getElementById('currentSignal').innerHTML = '';
+      document.getElementById('buyBtn').disabled = true;
+      document.getElementById('sellBtn').disabled = true;
+      if (autoTradeTimeout) clearTimeout(autoTradeTimeout);
+    }
+
+    // Execute a buy trade
+    function executeBuy() {
+      if (!lastCandle) return;
+      
+      const price = lastCandle.close;
+      const timestamp = Math.floor(Date.now() / 1000);
+      
+      if (currentBalance > 0) {
+        btcAmount = currentBalance / price;
+        tradeLog.push({
+          action: 'BUY',
+          price: price,
+          amount: btcAmount,
+          usdt: 0,
+          value: currentBalance,
+          time: timestamp,
+          mode: autoTradingEnabled ? 'AUTO' : 'MANUAL'
+        });
+        currentBalance = 0;
+        currentPosition = { entryPrice: price, entryTime: timestamp };
+        playAlert('BUY', price);
+        
+        // Update balance chart
+        balanceData.push({ time: timestamp, value: btcAmount * price });
+        balanceSeries.setData(balanceData);
+        updateResults();
+        clearSignal();
+      }
+    }
+
+    // Execute a sell trade
+    function executeSell() {
+      if (!lastCandle || btcAmount <= 0) return;
+      
+      const price = lastCandle.close;
+      const timestamp = Math.floor(Date.now() / 1000);
+      
+      currentBalance = btcAmount * price;
+      const profit = currentBalance - initialBalance;
+      tradeLog.push({
+        action: 'SELL',
+        price: price,
+        amount: 0,
+        usdt: currentBalance,
+        value: currentBalance,
+        time: timestamp,
+        profit: profit,
+        mode: autoTradingEnabled ? 'AUTO' : 'MANUAL'
+      });
+      btcAmount = 0;
+      currentPosition = null;
+      playAlert('SELL', price);
+      
+      // Update balance chart
+      balanceData.push({ time: timestamp, value: currentBalance });
+      balanceSeries.setData(balanceData);
+      updateResults();
+      clearSignal();
+    }
+
+    // Update trading results display
+    function updateResults() {
+      let html = `<h3>Trading Results (Initial: ${initialBalance.toFixed(2)} USDT)</h3>`;
+      html += `<p>Current Balance: ${currentBalance.toFixed(2)} USDT | BTC: ${btcAmount.toFixed(8)}</p>`;
+      html += `<p>Mode: ${autoTradingEnabled ? '<span class="profit">AUTO</span>' : '<span>MANUAL</span>'}</p>`;
+      html += `<p>Current Price: ${currentPrice ? currentPrice.toFixed(2) : 'Loading...'} USDT</p>`;
+      
+      if (tradeLog.length > 0) {
+        const lastTrade = tradeLog[tradeLog.length - 1];
+        const profit = lastTrade.profit !== undefined ? lastTrade.profit : (btcAmount * (currentPrice || lastTrade.price) - initialBalance);
+        const profitClass = profit >= 0 ? 'profit' : 'loss';
+        html += `<p>Current P/L: <span class="${profitClass}">${profit >= 0 ? '+' : ''}${profit.toFixed(2)} (${((profit/initialBalance)*100).toFixed(2)}%)</span></p>`;
+        
+        html += `<ul>`;
+        tradeLog.slice().reverse().forEach((trade, i) => {
+          if (i > 5) return;
+          const time = new Date(trade.time * 1000).toLocaleString();
+          const tradeProfitClass = trade.profit >= 0 ? 'profit' : 'loss';
+          const profitText = trade.profit !== undefined ? 
+            `<span class="${tradeProfitClass}">${trade.profit >= 0 ? '+' : ''}${trade.profit.toFixed(2)} (${((trade.profit/initialBalance)*100).toFixed(2)}%)</span>` : '';
+          
+          html += `<li>${time} - ${trade.action} @ ${trade.price.toFixed(2)} ${profitText} [${trade.mode}]</li>`;
+        });
+        html += `</ul>`;
+      } else {
+        html += `<p>No trades executed yet</p>`;
+      }
+
+      document.getElementById('tradingResults').innerHTML = html;
+    }
+
+    // Toggle auto trading mode
+    function toggleAutoTrading() {
+      autoTradingEnabled = !autoTradingEnabled;
+      document.getElementById('autoBtn').textContent = autoTradingEnabled ? 'Disable Auto Trading' : 'Enable Auto Trading';
+      document.getElementById('modeIndicator').textContent = autoTradingEnabled ? 'Auto Trading Mode' : 'Manual Mode';
+      document.getElementById('modeIndicator').className = autoTradingEnabled ? 'mode-indicator auto-mode' : 'mode-indicator';
+      
+      // Disable manual buttons in auto mode
+      document.getElementById('buyBtn').disabled = autoTradingEnabled || currentSignal !== 'BUY';
+      document.getElementById('sellBtn').disabled = autoTradingEnabled || currentSignal !== 'SELL';
+      
+      updateResults();
+    }
+
+    // Update current price
+    function updateCurrentPrice(price) {
+      currentPrice = price;
+      if (Date.now() - (lastPriceUpdate || 0) > 2000) { // Update every 2 seconds
+        updateResults();
+        lastPriceUpdate = Date.now();
+      }
+    }
+
+    // Process new candle data
+    function processCandle(candle) {
+      if (!candle || !candle.close || candle.time === lastProcessedCandleTime) return;
+      
+      lastCandle = candle;
+      lastProcessedCandleTime = candle.time;
+      updateCurrentPrice(candle.close);
+
+      // Add candle to chart
+      candleData.push(candle);
+      candleSeries.setData(candleData);
+
+      // Calculate candle height and deviation
+      const height = candle.high - candle.low;
+      const isBullish = candle.close > candle.open;
+
+      if (isBullish) {
+        greenHeights.push(height);
+        if (greenHeights.length > 5) greenHeights.shift();
+      }
+
+      // Calculate height deviation if we have enough data
+      let heightDiff = null;
+      if (greenHeights.length >= 5) {
+        const avg = greenHeights.reduce((a, b) => a + b, 0) / greenHeights.length;
+        heightDiff = ((height - avg) / avg) * 100;
+        
+        // Add to deviation series
+        diffSeries.setData(candleData.map((c, i) => ({
+          time: c.time,
+          value: i === candleData.length - 1 ? heightDiff : null
+        })));
+
+        // Generate signals (only if we have previous candle)
+        if (candleData.length > 1) {
+          const prevCandle = candleData[candleData.length - 2];
+          const prevHeight = prevCandle.high - prevCandle.low;
+          const prevAvg = greenHeights.slice(0, -1).reduce((a, b) => a + b, 0) / Math.min(greenHeights.length - 1, 5);
+          const prevDiff = ((prevHeight - prevAvg) / prevAvg) * 100;
+
+          // Clear any existing signal when new candle forms
+          if (currentSignal) clearSignal();
+
+          // BUY signal conditions (only if we don't have a position)
+          if (!currentPosition && heightDiff > 0 && heightDiff > prevDiff && isBullish) {
+            displaySignal('BUY', candle.close, candle.time);
+          }
+          // SELL signal conditions (only if we have a position)
+          else if (currentPosition && heightDiff < 0 && heightDiff < prevDiff && !isBullish) {
+            displaySignal('SELL', candle.close, candle.time);
+          }
+        }
+      }
+    }
+
+    // Start monitoring for signals
+    function startMonitoring(timeframe) {
+      if (ws) ws.close();
+      if (priceWs) priceWs.close();
+      
+      // Reset state
+      initCharts();
+      tradeLog = [];
+      balanceData = [];
+      signalLog = [];
+      currentPosition = null;
+      initialBalance = parseFloat(document.getElementById('demoAmount').value) || 10;
+      currentBalance = initialBalance;
+      btcAmount = 0;
+      candleData = [];
+      greenHeights = [];
+      markers = [];
+      clearSignal();
+      document.getElementById('signalLogEntries').innerHTML = '';
+      
+      // Binance WebSocket connections
+      const intervalMap = {
+        '4h': '4h', '1d': '1d', '3d': '3d', '1w': '1w'
+      };
+      const wsInterval = intervalMap[timeframe] || '1d';
+      
+      // First get historical data
+      fetch(`https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=${wsInterval}&limit=100`)
+        .then(res => res.json())
+        .then(data => {
+          data.forEach(item => {
+            processCandle({
+              time: Math.floor(item[0] / 1000),
+              open: parseFloat(item[1]),
+              high: parseFloat(item[2]),
+              low: parseFloat(item[3]),
+              close: parseFloat(item[4])
+            });
+          });
+          
+          // Connect to WebSocket for candle data
+          ws = new WebSocket(`wss://stream.binance.com:9443/ws/btcusdt@kline_${wsInterval}`);
+          
+          ws.onmessage = (event) => {
+            const message = JSON.parse(event.data);
+            if (message.k && message.k.x) { // If candle is closed
+              processCandle({
+                time: Math.floor(message.k.t / 1000),
+                open: parseFloat(message.k.o),
+                high: parseFloat(message.k.h),
+                low: parseFloat(message.k.l),
+                close: parseFloat(message.k.c)
+              });
+            }
+          };
+          
+          ws.onerror = (error) => {
+            console.error('WebSocket error:', error);
+            document.getElementById('difference').innerText = 'WebSocket connection error';
+          };
+          
+          // Connect to WebSocket for real-time price updates
+          priceWs = new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@ticker');
+          
+          priceWs.onmessage = (event) => {
+            const message = JSON.parse(event.data);
+            updateCurrentPrice(parseFloat(message.c)); // Current price
+          };
+          
+          isMonitoring = true;
+          document.getElementById('startMonitoring').textContent = 'Stop Monitoring';
+          document.getElementById('difference').innerText = `Monitoring BTC/USDT ${timeframe} swing trade signals`;
+          updateResults();
+        })
+        .catch(err => {
+          console.error('API error:', err);
+          document.getElementById('difference').innerText = 'Error loading initial data';
+        });
+    }
+
+    // Stop monitoring
+    function stopMonitoring() {
+      if (ws) {
+        ws.close();
+        ws = null;
+      }
+      if (priceWs) {
+        priceWs.close();
+        priceWs = null;
+      }
+      isMonitoring = false;
+      document.getElementById('startMonitoring').textContent = 'Start Monitoring';
+      document.getElementById('difference').innerText = 'Monitoring stopped';
+      clearSignal();
+    }
+
+    // Initialize
+    document.addEventListener('DOMContentLoaded', () => {
+      initCharts();
+      updateResults();
+      
+      document.getElementById('startMonitoring').addEventListener('click', () => {
+        if (isMonitoring) {
+          stopMonitoring();
+        } else {
+          const timeframe = document.getElementById('timeframe').value;
+          startMonitoring(timeframe);
+        }
+      });
+      
+      document.getElementById('buyBtn').addEventListener('click', executeBuy);
+      document.getElementById('sellBtn').addEventListener('click', executeSell);
+      document.getElementById('autoBtn').addEventListener('click', toggleAutoTrading);
+    });
+  </script>
+</body>
+</html>
