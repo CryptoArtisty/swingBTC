@@ -812,7 +812,7 @@
     // Initialize
     document.addEventListener('DOMContentLoaded', () => {
       initCharts();
-      loadTradingData(); // Load saved data first
+      loadTradingData(); // Load saved data on startup
       
       document.getElementById('startMonitoring').addEventListener('click', () => {
         if (isMonitoring) {
