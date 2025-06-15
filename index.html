@@ -118,7 +118,6 @@
       <option value="1w">1 Week</option>
     </select>
     <input type="number" id="demoAmount" placeholder="Demo Amount (USDT)" value="10" min="1" step="1" />
-    <button id="startMonitoring">Start Monitoring</button>
     <button id="buyBtn" disabled>Buy</button>
     <button id="sellBtn" disabled>Sell</button>
     <button id="autoBtn">Enable Auto Trading</button>
@@ -164,6 +163,7 @@
     let autoTradeTimeout = null;
     let lastPriceUpdate = null;
     let currentPrice = null;
+    let isLive = false; // Flag to control signal generation
     const STORAGE_KEY = 'btcSwingTradeData_v2';
 
     // Initialize charts
@@ -171,7 +171,6 @@
       if (chart) chart.remove();
       if (balanceChart) balanceChart.remove();
 
-      // Main price chart
       chart = LightweightCharts.createChart(document.getElementById('chart'), {
         layout: { background: { color: '#121212' }, textColor: '#fff' },
         grid: { vertLines: { color: '#333' }, horzLines: { color: '#333' } },
@@ -180,7 +179,6 @@
       candleSeries = chart.addCandlestickSeries();
       diffSeries = chart.addLineSeries({ color: 'rgba(255, 0, 0, 0.7)', lineWidth: 2 });
 
-      // Balance chart
       balanceChart = LightweightCharts.createChart(document.getElementById('balanceChart'), {
         layout: { background: { color: '#121212' }, textColor: '#fff' },
         grid: { vertLines: { color: '#222' }, horzLines: { color: '#222' } },
@@ -189,7 +187,7 @@
       balanceSeries = balanceChart.addLineSeries({ color: '#FFD700' });
     }
 
-    // Save all trading data to localStorage
+    // Save trading data to localStorage
     function saveTradingData() {
       const tradingData = {
         version: 2,
@@ -215,14 +213,11 @@
       if (savedData) {
         try {
           const tradingData = JSON.parse(savedData);
-          
-          // Basic validation
           if (!tradingData.version || tradingData.version < 2) {
             console.log('Old data format found, performing migration...');
             return migrateOldData(savedData);
           }
           
-          // Restore trading state
           tradeLog = tradingData.tradeLog || [];
           balanceData = tradingData.balanceData || [];
           signalLog = tradingData.signalLog || [];
@@ -232,20 +227,16 @@
           initialBalance = parseFloat(tradingData.initialBalance) || 10;
           autoTradingEnabled = tradingData.autoTradingEnabled || false;
           
-          // Restore UI elements
           document.getElementById('timeframe').value = tradingData.timeframe || '1d';
           document.getElementById('demoAmount').value = tradingData.demoAmount || '10';
           
-          // Update UI based on loaded data
           updateResults();
           updateSignalLogDisplay();
           
-          // Restore balance chart
           if (balanceSeries && balanceData.length > 0) {
             balanceSeries.setData(balanceData);
           }
           
-          // Update mode indicator
           document.getElementById('autoBtn').textContent = autoTradingEnabled ? 'Disable Auto Trading' : 'Enable Auto Trading';
           document.getElementById('modeIndicator').textContent = autoTradingEnabled ? 'Auto Trading Mode' : 'Manual Mode';
           document.getElementById('modeIndicator').className = autoTradingEnabled ? 'mode-indicator auto-mode' : 'mode-indicator';
@@ -259,17 +250,16 @@
       }
     }
 
-    // Migrate data from old format
+    // Migrate old data format
     function migrateOldData(oldData) {
       try {
         const data = JSON.parse(oldData);
-        // Create new data structure from old format
         const newData = {
           version: 2,
           tradeLog: data.trades || [],
           balanceData: data.balanceHistory || [],
           signalLog: data.signals || [],
-          currentPosition: null, // Will be reconstructed
+          currentPosition: null,
           currentBalance: data.metadata?.currentBalance || 10,
           btcAmount: data.metadata?.btcAmount || 0,
           initialBalance: data.metadata?.initialBalance || 10,
@@ -279,7 +269,6 @@
           lastUpdated: new Date().toISOString()
         };
         
-        // Reconstruct current position
         if (newData.btcAmount > 0 && newData.tradeLog.length > 0) {
           const lastBuy = newData.tradeLog.reverse().find(t => t.action === 'BUY');
           if (lastBuy) {
@@ -290,10 +279,9 @@
           }
         }
         
-        // Save migrated data
         localStorage.setItem(STORAGE_KEY, JSON.stringify(newData));
         console.log('Data migration completed');
-        loadTradingData(); // Load the migrated data
+        loadTradingData();
       } catch (e) {
         console.error('Migration failed:', e);
         localStorage.removeItem(STORAGE_KEY);
@@ -301,7 +289,7 @@
       }
     }
 
-    // Add entry to signal log
+    // Add signal to log
     function addSignalToLog(type, price, time) {
       const logEntry = {
         type: type,
@@ -317,7 +305,7 @@
 
     // Update signal log display
     function updateSignalLogDisplay() {
-      const logEntries = signalLog.slice(0, 100); // Show last 100 entries
+      const logEntries = signalLog.slice(0, 100);
       document.getElementById('signalLogEntries').innerHTML = logEntries.map(entry => `
         <div class="signal-log-entry ${entry.type.toLowerCase()}-log">
           [${entry.localTime}] ${entry.type} signal @ ${entry.price.toFixed(2)} 
@@ -326,7 +314,7 @@
       `).join('');
     }
 
-    // Show alert message
+    // Show alert
     function showAlert(message, color) {
       const alertBox = document.getElementById('alerts');
       alertBox.innerText = message;
@@ -335,7 +323,7 @@
       setTimeout(() => { alertBox.style.display = 'none'; }, 3000);
     }
 
-    // Export all trading data to JSON file
+    // Export trading data
     function exportAllData() {
       const exportData = {
         metadata: {
@@ -371,7 +359,7 @@
       showAlert('Data exported successfully', '#145214');
     }
 
-    // Import trading data from file
+    // Import trading data
     function importData() {
       const fileInput = document.getElementById('fileInput');
       fileInput.click();
@@ -384,40 +372,32 @@
         reader.onload = event => {
           try {
             const importedData = JSON.parse(event.target.result);
-            
-            // Validate imported data
             if (!importedData.trades || !importedData.signals || !importedData.balanceHistory) {
               throw new Error('Invalid data format');
             }
             
-            // Confirm with user before overwriting
             if (confirm('This will overwrite your current trading data. Continue?')) {
-              // Clear existing data
               tradeLog = [];
               balanceData = [];
               signalLog = [];
               currentPosition = null;
               
-              // Import trades
               tradeLog = importedData.trades.map(trade => ({
                 ...trade,
                 localTime: trade.localTime || new Date(trade.time * 1000).toLocaleString()
               }));
               
-              // Import signals
               signalLog = importedData.signals.map(signal => ({
                 ...signal,
                 localTime: signal.localTime || new Date(signal.time * 1000).toLocaleString(),
                 chartTime: signal.chartTime || new Date(signal.time * 1000).toLocaleString()
               }));
               
-              // Import balance history
               balanceData = importedData.balanceHistory.map(balance => ({
                 ...balance,
                 localTime: balance.localTime || new Date(balance.time * 1000).toLocaleString()
               }));
               
-              // Update current balances
               if (tradeLog.length > 0) {
                 const lastTrade = tradeLog[tradeLog.length - 1];
                 if (lastTrade.action === 'BUY') {
@@ -434,12 +414,10 @@
                 }
               }
               
-              // Update UI
               updateResults();
               updateSignalLogDisplay();
               balanceSeries.setData(balanceData);
               
-              // Save imported data
               saveTradingData();
               showAlert('Data imported successfully', '#145214');
             }
@@ -452,7 +430,7 @@
       };
     }
 
-    // Play alert sound and show visual notification
+    // Play alert sound and show notification
     function playAlert(type, price, isSignal = false) {
       const alertBox = document.getElementById('alerts');
       if (!muted) {
@@ -466,7 +444,7 @@
       setTimeout(() => { alertBox.style.display = 'none'; }, 3000);
     }
 
-    // Display current signal with countdown
+    // Display signal with countdown
     function displaySignal(type, price, candleTime) {
       currentSignal = type;
       signalPrice = price;
@@ -496,7 +474,6 @@
       
       updateCountdown();
       
-      // Enable appropriate button if in manual mode
       if (!autoTradingEnabled) {
         document.getElementById('buyBtn').disabled = type !== 'BUY';
         document.getElementById('sellBtn').disabled = type !== 'SELL';
@@ -504,7 +481,6 @@
       
       playAlert(type, price, true);
 
-      // Add marker to chart
       markers.push({
         time: candleTime,
         position: type === 'BUY' ? 'belowBar' : 'aboveBar',
@@ -514,7 +490,6 @@
       });
       candleSeries.setMarkers(markers);
 
-      // Schedule auto trade execution after 3 seconds
       if (autoTradingEnabled) {
         if (autoTradeTimeout) clearTimeout(autoTradeTimeout);
         autoTradeTimeout = setTimeout(() => {
@@ -524,7 +499,7 @@
       }
     }
 
-    // Clear current signal
+    // Clear signal
     function clearSignal() {
       currentSignal = null;
       signalPrice = null;
@@ -534,7 +509,7 @@
       if (autoTradeTimeout) clearTimeout(autoTradeTimeout);
     }
 
-    // Execute a buy trade
+    // Execute buy trade
     function executeBuy() {
       if (!lastCandle) return;
       
@@ -558,7 +533,6 @@
         currentPosition = { entryPrice: price, entryTime: timestamp };
         playAlert('BUY', price);
         
-        // Update balance chart
         const balancePoint = { 
           time: timestamp, 
           value: btcAmount * price,
@@ -572,7 +546,7 @@
       }
     }
 
-    // Execute a sell trade
+    // Execute sell trade
     function executeSell() {
       if (!lastCandle || btcAmount <= 0) return;
       
@@ -597,7 +571,6 @@
       currentPosition = null;
       playAlert('SELL', price);
       
-      // Update balance chart
       const balancePoint = { 
         time: timestamp, 
         value: currentBalance,
@@ -610,7 +583,7 @@
       saveTradingData();
     }
 
-    // Update trading results display
+    // Update trading results
     function updateResults() {
       let html = `<h3>Trading Results (Initial: ${initialBalance.toFixed(2)} USDT)</h3>`;
       html += `<p>Current Balance: ${currentBalance.toFixed(2)} USDT | BTC: ${btcAmount.toFixed(8)}</p>`;
@@ -640,14 +613,13 @@
       document.getElementById('tradingResults').innerHTML = html;
     }
 
-    // Toggle auto trading mode
+    // Toggle auto trading
     function toggleAutoTrading() {
       autoTradingEnabled = !autoTradingEnabled;
       document.getElementById('autoBtn').textContent = autoTradingEnabled ? 'Disable Auto Trading' : 'Enable Auto Trading';
       document.getElementById('modeIndicator').textContent = autoTradingEnabled ? 'Auto Trading Mode' : 'Manual Mode';
       document.getElementById('modeIndicator').className = autoTradingEnabled ? 'mode-indicator auto-mode' : 'mode-indicator';
       
-      // Disable manual buttons in auto mode
       document.getElementById('buyBtn').disabled = autoTradingEnabled || currentSignal !== 'BUY';
       document.getElementById('sellBtn').disabled = autoTradingEnabled || currentSignal !== 'SELL';
       
@@ -664,7 +636,7 @@
       }
     }
 
-    // Process new candle data
+    // Process candle data
     function processCandle(candle) {
       if (!candle || !candle.close || candle.time === lastProcessedCandleTime) return;
       
@@ -672,11 +644,9 @@
       lastProcessedCandleTime = candle.time;
       updateCurrentPrice(candle.close);
 
-      // Add candle to chart
       candleData.push(candle);
       candleSeries.setData(candleData);
 
-      // Calculate candle height and deviation
       const height = candle.high - candle.low;
       const isBullish = candle.close > candle.open;
 
@@ -685,59 +655,48 @@
         if (greenHeights.length > 5) greenHeights.shift();
       }
 
-      // Calculate height deviation if we have enough data
       let heightDiff = null;
       if (greenHeights.length >= 5) {
         const avg = greenHeights.reduce((a, b) => a + b, 0) / greenHeights.length;
         heightDiff = ((height - avg) / avg) * 100;
         
-        // Add to deviation series
         diffSeries.setData(candleData.map((c, i) => ({
           time: c.time,
           value: i === candleData.length - 1 ? heightDiff : null
         })));
 
-        // Generate signals (only if we have previous candle)
-        if (candleData.length > 1) {
+        if (isLive && candleData.length > 1) {
           const prevCandle = candleData[candleData.length - 2];
           const prevHeight = prevCandle.high - prevCandle.low;
           const prevAvg = greenHeights.slice(0, -1).reduce((a, b) => a + b, 0) / Math.min(greenHeights.length - 1, 5);
           const prevDiff = ((prevHeight - prevAvg) / prevAvg) * 100;
 
-          // Clear any existing signal when new candle forms
           if (currentSignal) clearSignal();
 
-          // BUY signal conditions (only if we don't have a position)
           if (!currentPosition && heightDiff > 0 && heightDiff > prevDiff && isBullish) {
             displaySignal('BUY', candle.close, candle.time);
-          }
-          // SELL signal conditions (only if we have a position)
-          else if (currentPosition && heightDiff < 0 && heightDiff < prevDiff && !isBullish) {
+          } else if (currentPosition && heightDiff < 0 && heightDiff < prevDiff && !isBullish) {
             displaySignal('SELL', candle.close, candle.time);
           }
         }
       }
     }
 
-    // Start monitoring for signals
+    // Start monitoring
     function startMonitoring(timeframe) {
       if (ws) ws.close();
       if (priceWs) priceWs.close();
       
-      // Reset state (but keep existing trading data)
       initCharts();
       candleData = [];
       greenHeights = [];
       markers = [];
       clearSignal();
+      isLive = false;
       
-      // Binance WebSocket connections
-      const intervalMap = {
-        '4h': '4h', '1d': '1d', '3d': '3d', '1w': '1w'
-      };
+      const intervalMap = { '4h': '4h', '1d': '1d', '3d': '3d', '1w': '1w' };
       const wsInterval = intervalMap[timeframe] || '1d';
       
-      // First get historical data
       fetch(`https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=${wsInterval}&limit=100`)
         .then(res => res.json())
         .then(data => {
@@ -750,13 +709,13 @@
               close: parseFloat(item[4])
             });
           });
+          isLive = true;
           
-          // Connect to WebSocket for candle data
           ws = new WebSocket(`wss://stream.binance.com:9443/ws/btcusdt@kline_${wsInterval}`);
           
           ws.onmessage = (event) => {
             const message = JSON.parse(event.data);
-            if (message.k && message.k.x) { // If candle is closed
+            if (message.k && message.k.x) {
               processCandle({
                 time: Math.floor(message.k.t / 1000),
                 open: parseFloat(message.k.o),
@@ -772,16 +731,14 @@
             document.getElementById('difference').innerText = 'WebSocket connection error';
           };
           
-          // Connect to WebSocket for real-time price updates
           priceWs = new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@ticker');
           
           priceWs.onmessage = (event) => {
             const message = JSON.parse(event.data);
-            updateCurrentPrice(parseFloat(message.c)); // Current price
+            updateCurrentPrice(parseFloat(message.c));
           };
           
           isMonitoring = true;
-          document.getElementById('startMonitoring').textContent = 'Stop Monitoring';
           document.getElementById('difference').innerText = `Monitoring BTC/USDT ${timeframe} swing trade signals`;
           updateResults();
           saveTradingData();
@@ -803,7 +760,7 @@
         priceWs = null;
       }
       isMonitoring = false;
-      document.getElementById('startMonitoring').textContent = 'Start Monitoring';
+      isLive = false;
       document.getElementById('difference').innerText = 'Monitoring stopped';
       clearSignal();
       saveTradingData();
@@ -812,15 +769,14 @@
     // Initialize
     document.addEventListener('DOMContentLoaded', () => {
       initCharts();
-      loadTradingData(); // Load saved data on startup
+      loadTradingData();
+      const timeframe = document.getElementById('timeframe').value;
+      startMonitoring(timeframe);
       
-      document.getElementById('startMonitoring').addEventListener('click', () => {
-        if (isMonitoring) {
-          stopMonitoring();
-        } else {
-          const timeframe = document.getElementById('timeframe').value;
-          startMonitoring(timeframe);
-        }
+      document.getElementById('timeframe').addEventListener('change', () => {
+        const newTimeframe = document.getElementById('timeframe').value;
+        stopMonitoring();
+        startMonitoring(newTimeframe);
       });
       
       document.getElementById('buyBtn').addEventListener('click', executeBuy);
@@ -829,10 +785,7 @@
       document.getElementById('exportBtn').addEventListener('click', exportAllData);
       document.getElementById('importBtn').addEventListener('click', importData);
       
-      // Save data periodically (every 30 seconds) as backup
       setInterval(saveTradingData, 30000);
-      
-      // Save data when page is about to unload
       window.addEventListener('beforeunload', saveTradingData);
     });
   </script>
